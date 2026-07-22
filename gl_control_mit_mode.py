@@ -1,29 +1,10 @@
 #!/usr/bin/env python3
 """
-gl_control.py  --  CubeMars GL40 II KV82.5 control + feedback over SocketCAN.
+gl_control_tune.py  --  CubeMars GL40 II KV82.5 control + feedback over SocketCAN.
 Supports multiple motors on one bus (daisy-chained). Verified MIT/PV/Vel packing
 and §5.4 feedback decode.
 
-Your setup: two motors, CAN IDs 1 and 3, both in MIT mode, on can0 @ 1 Mbps.
-
-Setup:
-    sudo ip link set can0 up type can bitrate 1000000
-
-Single motor:
-    python3 gl_control.py --mode mit --node 1 --pos 0 --vel 0 --kp 5 --kd 1 --tff 0 --hold 3
-    python3 gl_control.py --mode mit --node 3 --enable-only --hold 3
-
-Both motors (IDs default 1 and 3):
-    # mirrored: same command to both
-    python3 gl_control.py --mode mit --both --pos 0.5 --vel 0 --kp 5 --kd 1 --hold 3
-    # independent: per-motor positions
-    python3 gl_control.py --mode mit --both --pos2 "1:0.3,3:-0.3" --kp 5 --kd 1 --hold 3
-    # just enable both and watch feedback
-    python3 gl_control.py --mode mit --both --enable-only --hold 3
-
-SAFETY: secure both motors. In MIT mode the motor actively drives to the target and an
-unloaded torque command spins to high speed. Start with small pos, low kp/kd. The script
-always disables on exit.
+Includes post-run matplotlib graphing and step-response metrics for tuning gains.
 """
 
 import argparse
@@ -32,26 +13,26 @@ import sys
 import time
 
 import can
+import numpy as np
+import matplotlib.pyplot as plt
 
 CHANNEL = "can0"
-DEFAULT_NODES = [1, 3]            # your two motors
+DEFAULT_NODES = [1, 3]
 
 MODE_PREFIX = {"mit": 0x0, "pv": 0x1, "vel": 0x2}
 
-# feedback scaling (section 5.4)
 P_MIN, P_MAX = -12.5, 12.5
 V_MIN, V_MAX = -200.0, 200.0
 T_MIN, T_MAX = -10.0, 10.0
 
-# MIT command packing ranges (verified against section 5.5 examples)
 MIT_P_MIN, MIT_P_MAX = -12.5, 12.5
 MIT_V_MIN, MIT_V_MAX = -65.0, 65.0
 MIT_KP_MIN, MIT_KP_MAX = 0.0, 500.0
 MIT_KD_MIN, MIT_KD_MAX = 0.0, 5.0
 MIT_T_MIN, MIT_T_MAX = -10.0, 10.0
-KT = 0.10  # Approx Torque Constant (Nm/A) for KV82.5 motor
+KT = 0.10  
 
-LOOP_HZ = 500   # MIT command rate (Hz) — needs ~1kHz ideally; 500Hz is Python's practical ceiling
+LOOP_HZ = 500   
 
 ERR_NAMES = {
     0: "Disabled", 1: "Enabled", 8: "Over-voltage", 9: "Under-voltage",
@@ -66,27 +47,21 @@ UNIVERSAL = {
     "clear":   bytes([0xFF]*7 + [0xFB]),
 }
 
-
 def arb_id(mode, node):
     return (MODE_PREFIX[mode] << 8) | (node & 0xFF)
-
 
 def f2u(x, lo, hi, bits):
     x = max(min(x, hi), lo)
     return int((x - lo) * ((1 << bits) - 1) / (hi - lo))
 
-
 def u2f(x, lo, hi, bits):
     return x * (hi - lo) / ((1 << bits) - 1) + lo
-
 
 def pack_pv(pos, vel):
     return struct.pack("<ff", float(pos), float(vel))
 
-
 def pack_vel(vel):
     return struct.pack("<f", float(vel))
-
 
 def pack_mit(pos, vel, kp, kd, tff):
     p = f2u(pos, MIT_P_MIN, MIT_P_MAX, 16)
@@ -103,7 +78,6 @@ def pack_mit(pos, vel, kp, kd, tff):
         ((kdi & 0xF) << 4) | ((ti >> 8) & 0xF),
         ti & 0xFF,
     ])
-
 
 def decode(d):
     if len(d) < 8:
@@ -123,16 +97,13 @@ def decode(d):
         "t_motor": d[7] if d[7] < 128 else d[7] - 256,
     }
 
-
 def send(bus, mode, node, data, label=""):
     bus.send(can.Message(arbitration_id=arb_id(mode, node),
                          data=data, is_extended_id=False))
     if label:
         print(f"[tx] node {node} {label}: {arb_id(mode, node):03X}#{data.hex().upper()}")
 
-
 def stream(bus, seconds, nodes):
-    """Print decoded feedback for `seconds`, labeled per source CAN ID."""
     t_end = time.time() + seconds
     last = {}
     while time.time() < t_end:
@@ -144,12 +115,11 @@ def stream(bus, seconds, nodes):
             continue
         n = fb["canid"]
         now = time.time()
-        if now - last.get(n, 0) > 0.15:    # ~6 Hz per motor
+        if now - last.get(n, 0) > 0.15: 
             print(f"  [M{n}] pos={fb['pos']:+6.3f} rad  spd={fb['spd']:+7.2f} r/s  "
                   f"torque={fb['torque']:+6.3f} Nm  current~={fb['current']:+6.2f} A  "
                   f"Tdrv={fb['t_drive']}C Tmot={fb['t_motor']}C  [{fb['err_name']}]")
             last[n] = now
-
 
 def build_cmd(mode, pos, vel, kp, kd, tff):
     if mode == "pv":
@@ -158,10 +128,8 @@ def build_cmd(mode, pos, vel, kp, kd, tff):
         return pack_vel(vel)
     return pack_mit(pos, vel, kp, kd, tff)
 
-
 def _run_mit_loop(bus, nodes, pos_targets, vel, kp, kd, tff,
-                  hold, ramp, current_positions):
-    """Send MIT commands at LOOP_HZ, ramping from current_pos to target_pos."""
+                  hold, ramp, current_positions, history):
     dt       = 1.0 / LOOP_HZ
     t_start  = time.time()
     t_end    = t_start + hold
@@ -181,13 +149,24 @@ def _run_mit_loop(bus, nodes, pos_targets, vel, kp, kd, tff,
                 is_extended_id=False,
             ))
 
-        # Non-blocking recv so we never stall the control loop waiting for a frame.
         msg = bus.recv(timeout=0)
         if msg:
             fb = decode(msg.data)
             if fb and fb["canid"] in nodes:
                 n   = fb["canid"]
                 now = time.time()
+                elapsed_fb = now - t_start
+                
+                # --- RECORD TELEMETRY DATA ---
+                history[n]['t'].append(elapsed_fb)
+                history[n]['pos'].append(fb['pos'])
+                history[n]['spd'].append(fb['spd'])
+                history[n]['torque'].append(fb['torque'])
+                
+                p0 = current_positions.get(n, 0.0)
+                alpha_now = min(elapsed_fb / ramp, 1.0) if ramp > 0 else 1.0
+                history[n]['cmd'].append(p0 + alpha_now * (pos_targets.get(n, p0) - p0))
+
                 if now - last_print.get(n, 0) > 0.2:
                     alpha_pct = min(elapsed / ramp * 100, 100) if ramp > 0 else 100
                     print(f"  [M{n}] pos={fb['pos']:+6.3f} rad  spd={fb['spd']:+7.2f} r/s  "
@@ -199,18 +178,121 @@ def _run_mit_loop(bus, nodes, pos_targets, vel, kp, kd, tff,
         if remaining > 0:
             time.sleep(remaining)
 
+def calculate_metrics(t_list, y_list, y0, y_ref):
+    """Calculate step response characteristics."""
+    if len(t_list) < 2: return {}
+    t = np.array(t_list)
+    y = np.array(y_list)
+    
+    step_size = y_ref - y0
+    if abs(step_size) < 1e-3:
+        return {"Note": "Step size too small for reliable metrics."}
+        
+    metrics = {}
+    
+    # Overshoot/Undershoot
+    if step_size > 0:
+        peak = np.max(y)
+        overshoot = max(0.0, (peak - y_ref) / step_size * 100.0)
+    else:
+        peak = np.min(y)
+        overshoot = max(0.0, (peak - y_ref) / step_size * 100.0)
+    metrics["Overshoot (%)"] = overshoot
+    
+    # Rise time (10% to 90%)
+    y_10 = y0 + 0.10 * step_size
+    y_90 = y0 + 0.90 * step_size
+    try:
+        if step_size > 0:
+            t_10 = t[np.where(y >= y_10)[0][0]]
+            t_90 = t[np.where(y >= y_90)[0][0]]
+        else:
+            t_10 = t[np.where(y <= y_10)[0][0]]
+            t_90 = t[np.where(y <= y_90)[0][0]]
+        metrics["Rise Time (s)"] = t_90 - t_10
+    except IndexError:
+        metrics["Rise Time (s)"] = None # Never reached 90%
+        
+    # Settling time (stays within 2% of final target)
+    margin = 0.02 * abs(step_size)
+    upper_bound = y_ref + margin
+    lower_bound = y_ref - margin
+    out_of_bounds = np.where((y > upper_bound) | (y < lower_bound))[0]
+    if len(out_of_bounds) > 0:
+        settle_idx = out_of_bounds[-1]
+        if settle_idx == len(y) - 1:
+            metrics["Settling Time (s)"] = None # Didn't settle before timeout
+        else:
+            metrics["Settling Time (s)"] = t[settle_idx]
+    else:
+        metrics["Settling Time (s)"] = 0.0
+
+    # Steady State Error (Mean of last 10% of samples)
+    n_last = max(1, len(y) // 10)
+    sse = np.mean(y[-n_last:]) - y_ref
+    metrics["Steady-State Error (rad)"] = sse
+
+    return metrics
+
+def plot_responses(history, pos_targets, current_positions, ramp):
+    """Plot the stored history data and print metrics after the run."""
+    print("\n--- Tuning Metrics ---")
+    if ramp > 0:
+        print(f"WARNING: Metrics are skewed because ramp ({ramp}s) is > 0. For true step response tuning, use --ramp 0")
+        
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    fig.canvas.manager.set_window_title('Motor Response Tuning')
+
+    for n, data in history.items():
+        if not data['t']:
+            continue
+            
+        t = data['t']
+        y_ref = pos_targets.get(n, 0.0)
+        y0 = current_positions.get(n, 0.0)
+        
+        # Calculate and print metrics
+        metrics = calculate_metrics(t, data['pos'], y0, y_ref)
+        print(f"\nMotor {n} -> Target: {y_ref:.3f} rad, Initial: {y0:.3f} rad")
+        for k, v in metrics.items():
+            if v is None:
+                print(f"  {k}: Did not reach")
+            elif isinstance(v, float):
+                print(f"  {k}: {v:.4f}")
+            else:
+                print(f"  {k}: {v}")
+
+        # Position Plot
+        axes[0].plot(t, data['pos'], label=f"M{n} Actual")
+        axes[0].plot(t, data['cmd'], '--', label=f"M{n} Command")
+        
+        # Velocity Plot
+        axes[1].plot(t, data['spd'], label=f"M{n} Velocity")
+
+    axes[0].set_title('Position Tracking')
+    axes[0].set_ylabel('Position (rad)')
+    axes[0].grid(True)
+    axes[0].legend()
+
+    axes[1].set_title('Velocity Feedback')
+    axes[1].set_xlabel('Time (s)')
+    axes[1].set_ylabel('Velocity (rad/s)')
+    axes[1].grid(True)
+    axes[1].legend()
+
+    plt.tight_layout()
+    print("\nDisplaying plot... (Close window to exit completely)")
+    plt.show()
 
 def parse_pos2(s):
-    """'1:0.3,3:-0.3' -> {1:0.3, 3:-0.3}"""
     out = {}
     for part in s.split(","):
         k, v = part.split(":")
         out[int(k)] = float(v)
     return out
 
-
 def main():
-    ap = argparse.ArgumentParser(description="GL40 II CAN control + feedback (multi-motor)")
+    ap = argparse.ArgumentParser(description="GL40 II CAN control + feedback + tuning graph")
     ap.add_argument("--mode", choices=["pv", "vel", "mit"], required=True)
     ap.add_argument("--node", type=lambda s: int(s, 0), default=1,
                     help="single motor CAN ID (default 1)")
@@ -225,7 +307,7 @@ def main():
     ap.add_argument("--kp", type=float, default=1.0)
     ap.add_argument("--kd", type=float, default=2.0)
     ap.add_argument("--ramp", type=float, default=1.0,
-                    help="MIT: seconds to ramp from current pos to target (default 1.0)")
+                    help="MIT: seconds to ramp from current pos to target (default 1.0). Set to 0 for step response.")
     ap.add_argument("--tff", type=float, default=0.0)
     ap.add_argument("--hold", type=float, default=3.0)
     ap.add_argument("--enable-only", action="store_true")
@@ -238,6 +320,11 @@ def main():
         nodes = [args.node]
 
     pos2 = parse_pos2(args.pos2) if args.pos2 else None
+    
+    # Store trajectory data for analysis
+    history = {n: {'t': [], 'pos': [], 'cmd': [], 'spd': [], 'torque': []} for n in nodes}
+    pos_targets = {}
+    current_positions = {}
 
     try:
         bus = can.Bus(channel=CHANNEL, interface="socketcan")
@@ -247,8 +334,6 @@ def main():
         sys.exit(1)
 
     try:
-        # Enable each motor and capture current position from the enable-response frame.
-        current_positions: dict = {}
         for n in nodes:
             send(bus, args.mode, n, UNIVERSAL["enable"], "enable")
             time.sleep(0.03)
@@ -283,7 +368,7 @@ def main():
                       f"targets={pos_targets}  (Ctrl-C to stop):")
                 _run_mit_loop(bus, nodes, pos_targets, args.vel,
                               args.kp, args.kd, args.tff,
-                              args.hold, args.ramp, current_positions)
+                              args.hold, args.ramp, current_positions, history)
             else:
                 for n in nodes:
                     data = build_cmd(args.mode, pos_targets[n], args.vel,
@@ -298,6 +383,7 @@ def main():
     except KeyboardInterrupt:
         print("\n[abort] Ctrl-C")
     finally:
+        # Crucial: Disable motors BEFORE showing the blocking matplotlib window
         print("[disable] all motors")
         for n in nodes:
             try:
@@ -306,7 +392,12 @@ def main():
                 pass
             time.sleep(0.02)
         bus.shutdown()
-
+        
+        # Display performance graphs safely once motors are disabled
+        if args.mode == "mit" and not args.enable_only:
+            has_data = any(len(history[n]['t']) > 0 for n in nodes)
+            if has_data:
+                plot_responses(history, pos_targets, current_positions, args.ramp)
 
 if __name__ == "__main__":
     main()
