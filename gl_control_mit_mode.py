@@ -5,6 +5,9 @@ Supports multiple motors on one bus (daisy-chained). Verified MIT/PV/Vel packing
 and §5.4 feedback decode.
 
 Includes post-run matplotlib graphing and step-response metrics for tuning gains.
+
+python3 gl_control_mit_mode.py --mode mit --node 1 --pos 0 --vel 0 --kp 0.19 --kd 0.01 --tff 0.0 --hold 3 --ramp 0
+
 """
 
 import argparse
@@ -304,9 +307,9 @@ def main():
     ap.add_argument("--vel", type=float, default=0.0)
     ap.add_argument("--pos2", type=str, default=None,
                     help="per-motor positions for --both, e.g. '1:0.3,3:-0.3'")
-    ap.add_argument("--kp", type=float, default=1.0)
-    ap.add_argument("--kd", type=float, default=2.0)
-    ap.add_argument("--ramp", type=float, default=1.0,
+    ap.add_argument("--kp", type=float, default=0.19)
+    ap.add_argument("--kd", type=float, default=0.01)
+    ap.add_argument("--ramp", type=float, default=0.0,
                     help="MIT: seconds to ramp from current pos to target (default 1.0). Set to 0 for step response.")
     ap.add_argument("--tff", type=float, default=0.0)
     ap.add_argument("--hold", type=float, default=3.0)
