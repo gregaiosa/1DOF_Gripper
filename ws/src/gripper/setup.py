@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'gripper_node = gripper.gripper_node:main',
             'so101_arm_node = gripper.so101_arm_node:main',
+            'phosphobot_bridge = gripper.phosphobot_bridge:main',
         ],
     },
 )

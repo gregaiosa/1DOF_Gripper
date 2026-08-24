@@ -185,16 +185,6 @@ class SO101ArmNode(Node):
         # ---------------------------------------------------------
         self.running = True
         
-        # Gripper CAN Threads
-        self.read_thread = threading.Thread(target=self._can_read_loop, daemon=True)
-        self.read_thread.start()
-        self.control_thread = threading.Thread(target=self._can_control_loop, daemon=True)
-        self.control_thread.start()
-        
-        # Arm Serial Thread
-        self.arm_thread = threading.Thread(target=self._arm_loop, daemon=True)
-        self.arm_thread.start()
-        
         # Services
         self.srv_home = self.create_service(Trigger, '~/gripper/home', self.home_callback)
         self.srv_open = self.create_service(Trigger, '~/gripper/open', self.open_callback)
@@ -210,6 +200,16 @@ class SO101ArmNode(Node):
         # Subscribers
         self.sub_arm_cmd = self.create_subscription(JointState, '~/arm/joint_commands', self.arm_cmd_callback, 10)
         self.sub_gripper_cmd = self.create_subscription(Float64, '~/gripper/position_command', self.gripper_cmd_callback, 10)
+
+        # Gripper CAN Threads
+        self.read_thread = threading.Thread(target=self._can_read_loop, daemon=True)
+        self.read_thread.start()
+        self.control_thread = threading.Thread(target=self._can_control_loop, daemon=True)
+        self.control_thread.start()
+        
+        # Arm Serial Thread
+        self.arm_thread = threading.Thread(target=self._arm_loop, daemon=True)
+        self.arm_thread.start()
         
         # 50Hz telemetry timer for Gripper
         self.telemetry_timer = self.create_timer(0.02, self.publish_telemetry)
