@@ -135,8 +135,15 @@ class SO101ArmNode(Node):
                 self.arm = SOFollower(config)
                 
                 # The gripper is now the GL40 II on CAN, so remove it from the Feetech bus
-                if "gripper" in self.arm.bus.motors:
-                    del self.arm.bus.motors["gripper"]
+                # Since FeetechMotorsBus caches properties like 'ids', we must completely recreate it
+                from lerobot.motors.feetech import FeetechMotorsBus
+                new_motors = {name: m for name, m in self.arm.bus.motors.items() if name != "gripper"}
+                self.arm.bus = FeetechMotorsBus(
+                    port=self.arm.bus.port,
+                    motors=new_motors,
+                    calibration=self.arm.bus.calibration,
+                    protocol_version=self.arm.bus.protocol_version
+                )
                     
                 self.arm.connect()
                 self.get_logger().info("SO-101 Arm connected successfully.")
