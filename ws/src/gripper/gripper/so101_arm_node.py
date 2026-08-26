@@ -356,10 +356,11 @@ class SO101ArmNode(Node):
                 error = t_pos - self.current_pos
                 comp_torque = 0.0
                 
-                # Apply Coulomb friction compensation if outside a tiny deadband to prevent jitter
-                if abs(error) > 0.01:
-                    friction_comp = self.get_parameter('friction_comp').value
-                    comp_torque = math.copysign(friction_comp, error)
+                # Apply Coulomb friction compensation, but taper it linearly as it gets very close to the target 
+                # (within 0.1 rad) to prevent violent bang-bang limit cycle oscillations
+                friction_comp = self.get_parameter('friction_comp').value
+                taper_scale = min(1.0, abs(error) / 0.1)
+                comp_torque = math.copysign(friction_comp * taper_scale, error)
                     
                 cmd = pack_mit(pos=t_pos, vel=0.0, kp=self.kp, kd=self.kd, tff=comp_torque)
                 self._send_raw("mit", cmd)
