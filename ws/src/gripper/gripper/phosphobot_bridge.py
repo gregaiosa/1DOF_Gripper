@@ -4,6 +4,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64
+from std_srvs.srv import Trigger
 import numpy as np
 import traceback
 
@@ -21,7 +22,8 @@ class PhosphobotROSBridge(Node):
     def __init__(self):
         super().__init__('phosphobot_bridge')
         self.pub_arm = self.create_publisher(JointState, '/so101_arm_node/arm/joint_commands', 10)
-        self.pub_gripper = self.create_publisher(Float64, '/gripper/position_command', 10)
+        self.pub_gripper = self.create_publisher(Float64, '/so101_arm_node/gripper/position_command', 10)
+        self.cli_home = self.create_client(Trigger, '/so101_arm_node/gripper/home')
         self.get_logger().info("Phosphobot ROS 2 Bridge Node initialized")
 
 def main(args=None):
@@ -73,10 +75,16 @@ def main(args=None):
             
         if self.calibration_current_step == 0:
             self.calibration_current_step = 1
-            return "in_progress", "Step 1: Bypassed for ROS 2"
+            # Trigger the actual ROS 2 homing sequence!
+            if node.cli_home.wait_for_service(timeout_sec=1.0):
+                req = Trigger.Request()
+                node.cli_home.call_async(req)
+                return "in_progress", "Step 1: Homing Gripper..."
+            else:
+                return "failed", "Homing service not available! Is arm node running?"
         elif self.calibration_current_step == 1:
             self.calibration_current_step = 2
-            return "in_progress", "Step 2: Bypassed for ROS 2"
+            return "in_progress", "Step 2: Waiting for homing to finish..."
         else:
             self.calibration_current_step = 0
             return "success", "Calibration complete!"

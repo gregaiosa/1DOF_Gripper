@@ -109,7 +109,7 @@ class SO101ArmNode(Node):
         self.declare_parameter('homing_speed', 2.0) # rad/s. Use positive to close jaws now.
         self.declare_parameter('homing_current_threshold', 2.5) # Amps
         self.declare_parameter('open_position', 0.67) # radians
-        self.declare_parameter('kp', 0.17)
+        self.declare_parameter('kp', 0.16)
         self.declare_parameter('kd', 0.006)
         self.declare_parameter('friction_comp', 0.09) # Nm of Coulomb friction to compensate
         
@@ -285,8 +285,21 @@ class SO101ArmNode(Node):
             self.get_logger().warn("Gripper not homed. Ignoring command.")
             return
         
+        # Calculate the physical open position (same logic as open_callback)
+        open_val = self.get_parameter('open_position').value
+        homing_speed = self.get_parameter('homing_speed').value
+        if homing_speed < 0:
+            open_target = abs(open_val)
+        else:
+            open_target = -abs(open_val)
+            
+        # Map 0.0 to 1.0 (from Phosphobot) into the physical workspace
+        # 0.0 -> 0.0 (Closed), 1.0 -> open_target (Open)
+        cmd_clamped = max(0.0, min(1.0, float(msg.data)))
+        mapped_pos = cmd_clamped * open_target
+        
         with self.state_lock:
-            self.target_pos = msg.data
+            self.target_pos = mapped_pos
             self.control_mode = "POSITION"
 
     def _send_raw(self, mode, data):
