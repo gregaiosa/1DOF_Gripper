@@ -105,6 +105,7 @@ class SO101ArmNode(Node):
         self.declare_parameter('arm_port', '/dev/ttyACM0')
         # Gripper
         self.declare_parameter('node_id', 3)
+        self.declare_parameter('leader_id', 1)
         self.declare_parameter('can_channel', 'can0')
         self.declare_parameter('homing_speed', 2.0) # rad/s. Use positive to close jaws now.
         self.declare_parameter('homing_current_threshold', 2.5) # Amps
@@ -112,13 +113,18 @@ class SO101ArmNode(Node):
         self.declare_parameter('kp', 0.16)
         self.declare_parameter('kd', 0.006)
         self.declare_parameter('friction_comp', 0.09) # Nm of Coulomb friction to compensate
+        self.declare_parameter('haptic_gain', 1.0)
+        self.declare_parameter('enable_bilateral', True)
         
         # Extract params
         arm_port = self.get_parameter('arm_port').value
         self.node_id = self.get_parameter('node_id').value
+        self.leader_id = self.get_parameter('leader_id').value
         self.channel = self.get_parameter('can_channel').value
         self.kp = self.get_parameter('kp').value
         self.kd = self.get_parameter('kd').value
+        self.haptic_gain = self.get_parameter('haptic_gain').value
+        self.enable_bilateral = self.get_parameter('enable_bilateral').value
         
         # ---------------------------------------------------------
         # INITIALIZE SO-101 ARM (FEETECH)
@@ -164,10 +170,18 @@ class SO101ArmNode(Node):
             self.get_logger().error(f"Failed to open CAN bus: {e}")
             raise e
 
+        # Follower (GL40 II) State
         self.current_pos = 0.0
         self.current_vel = 0.0
         self.current_iq = 0.0
         self.current_torque = 0.0
+        
+        # Leader (GL60 II) State
+        self.leader_pos = 0.0
+        self.leader_vel = 0.0
+        self.leader_iq = 0.0
+        self.leader_torque = 0.0
+        
         self.homed = False
         
         # State machine for the control loop
@@ -176,8 +190,13 @@ class SO101ArmNode(Node):
         self.target_pos = 0.0
         self.target_vel = 0.0
         
-        # Enable the motor in MIT mode
-        self._send_raw("mit", UNIVERSAL["enable"])
+        # Enable both motors in MIT mode
+        self._send_raw("mit", self.node_id, UNIVERSAL["enable"])
+        self._send_raw("mit", self.leader_id, UNIVERSAL["enable"])
+        time.sleep(0.1)
+        
+        # Zero the leader immediately upon startup (assumes no hard stops)
+        self._send_raw("mit", self.leader_id, UNIVERSAL["zero"])
         time.sleep(0.1)
 
         # ---------------------------------------------------------
@@ -302,8 +321,8 @@ class SO101ArmNode(Node):
             self.target_pos = mapped_pos
             self.control_mode = "POSITION"
 
-    def _send_raw(self, mode, data):
-        msg = can.Message(arbitration_id=arb_id(mode, self.node_id),
+    def _send_raw(self, mode, node_id, data):
+        msg = can.Message(arbitration_id=arb_id(mode, node_id),
                           data=data, is_extended_id=False)
         try:
             self.bus.send(msg)
@@ -316,19 +335,27 @@ class SO101ArmNode(Node):
                 msg = self.bus.recv(timeout=0.1)
                 if msg:
                     fb = decode(msg.data)
-                    if fb and fb["canid"] == self.node_id:
-                        self.current_pos = fb["pos"]
-                        self.current_vel = fb["spd"]
-                        self.current_iq = fb["current"]
-                        self.current_torque = fb["torque"]
-                        if fb["err"] > 1:
-                            self.get_logger().error(f"Motor Fault: {fb['err_name']}", throttle_duration_sec=1.0)
+                    if fb:
+                        if fb["canid"] == self.node_id:
+                            self.current_pos = fb["pos"]
+                            self.current_vel = fb["spd"]
+                            self.current_iq = fb["current"]
+                            self.current_torque = fb["torque"]
+                            if fb["err"] > 1:
+                                self.get_logger().error(f"Follower Motor Fault: {fb['err_name']}", throttle_duration_sec=1.0)
+                        elif fb["canid"] == self.leader_id:
+                            self.leader_pos = fb["pos"]
+                            self.leader_vel = fb["spd"]
+                            self.leader_iq = fb["current"]
+                            self.leader_torque = fb["torque"]
+                            if fb["err"] > 1:
+                                self.get_logger().error(f"Leader Motor Fault: {fb['err_name']}", throttle_duration_sec=1.0)
             except Exception:
                 pass
 
     def _can_control_loop(self):
-        # Run at ~500Hz for MIT mode
-        loop_rate = 500.0
+        # Run at ~1000Hz for MIT mode
+        loop_rate = 1000.0
         dt = 1.0 / loop_rate
         
         while self.running:
@@ -349,25 +376,56 @@ class SO101ArmNode(Node):
                 
                 # Use the user-defined kp and kd for homing as requested.
                 cmd = pack_mit(pos=t_pos, vel=0.0, kp=self.kp, kd=self.kd, tff=comp_torque)
-                self._send_raw("mit", cmd)
-            elif mode == "POSITION":
-                # For position control, use full PD
-                # Torque = kp * (t_pos - pos) + kd * (0 - vel)
-                error = t_pos - self.current_pos
-                comp_torque = 0.0
+                self._send_raw("mit", self.node_id, cmd)
                 
-                # Apply Coulomb friction compensation, but taper it linearly as it gets very close to the target 
-                # (within 0.1 rad) to prevent violent bang-bang limit cycle oscillations
-                friction_comp = self.get_parameter('friction_comp').value
-                taper_scale = min(1.0, abs(error) / 0.1)
-                comp_torque = math.copysign(friction_comp * taper_scale, error)
+                # Leader holds zero torque during follower homing
+                leader_cmd = pack_mit(pos=0.0, vel=0.0, kp=0.0, kd=0.0, tff=0.0)
+                self._send_raw("mit", self.leader_id, leader_cmd)
+                
+            elif mode == "POSITION":
+                if self.enable_bilateral:
+                    # Bilateral mode: Follower tracks Leader (1:1), Leader feels Follower's torque
+                    t_pos = self.leader_pos
                     
-                cmd = pack_mit(pos=t_pos, vel=0.0, kp=self.kp, kd=self.kd, tff=comp_torque)
-                self._send_raw("mit", cmd)
+                    # Follower Command
+                    error = t_pos - self.current_pos
+                    friction_comp = self.get_parameter('friction_comp').value
+                    taper_scale = min(1.0, abs(error) / 0.1)
+                    comp_torque = math.copysign(friction_comp * taper_scale, error)
+                    
+                    cmd = pack_mit(pos=t_pos, vel=0.0, kp=self.kp, kd=self.kd, tff=comp_torque)
+                    self._send_raw("mit", self.node_id, cmd)
+                    
+                    # Leader Command (Force Feedback)
+                    # We negate the follower's torque so it pushes back against the user
+                    force_feedback = -self.current_torque * self.haptic_gain
+                    
+                    # Add a tiny bit of kd damping (0.01) to the leader to make it feel smooth
+                    leader_cmd = pack_mit(pos=0.0, vel=0.0, kp=0.0, kd=0.01, tff=force_feedback)
+                    self._send_raw("mit", self.leader_id, leader_cmd)
+                else:
+                    # Normal position control (e.g. from Phosphobot topic)
+                    error = t_pos - self.current_pos
+                    comp_torque = 0.0
+                    
+                    # Apply Coulomb friction compensation, but taper it linearly as it gets very close to the target 
+                    # (within 0.1 rad) to prevent violent bang-bang limit cycle oscillations
+                    friction_comp = self.get_parameter('friction_comp').value
+                    taper_scale = min(1.0, abs(error) / 0.1)
+                    comp_torque = math.copysign(friction_comp * taper_scale, error)
+                        
+                    cmd = pack_mit(pos=t_pos, vel=0.0, kp=self.kp, kd=self.kd, tff=comp_torque)
+                    self._send_raw("mit", self.node_id, cmd)
+                    
+                    # Leader holds zero torque
+                    leader_cmd = pack_mit(pos=0.0, vel=0.0, kp=0.0, kd=0.0, tff=0.0)
+                    self._send_raw("mit", self.leader_id, leader_cmd)
+                    
             elif mode == "IDLE":
                 # Send 0 torque / 0 gains just to keep connection alive if needed
                 cmd = pack_mit(pos=0.0, vel=0.0, kp=0.0, kd=0.0, tff=0.0)
-                self._send_raw("mit", cmd)
+                self._send_raw("mit", self.node_id, cmd)
+                self._send_raw("mit", self.leader_id, cmd)
 
             elapsed = time.time() - t_start
             if elapsed < dt:
@@ -448,7 +506,7 @@ class SO101ArmNode(Node):
             self.control_mode = "IDLE"
         
         time.sleep(0.1)
-        self._send_raw("mit", UNIVERSAL["zero"])
+        self._send_raw("mit", self.node_id, UNIVERSAL["zero"])
         time.sleep(0.1)
         
         with self.state_lock:
@@ -513,14 +571,16 @@ class SO101ArmNode(Node):
         except Exception:
             pass
 
-        # Disable gripper (send 0 torque explicitly first, then disable)
+        # Disable gripper and leader (send 0 torque explicitly first, then disable)
         try:
             cmd = pack_mit(pos=0.0, vel=0.0, kp=0.0, kd=0.0, tff=0.0)
             for _ in range(3):
-                self._send_raw("mit", cmd)
+                self._send_raw("mit", self.node_id, cmd)
+                self._send_raw("mit", self.leader_id, cmd)
                 time.sleep(0.01)
             for _ in range(3):
-                self._send_raw("mit", UNIVERSAL["disable"])
+                self._send_raw("mit", self.node_id, UNIVERSAL["disable"])
+                self._send_raw("mit", self.leader_id, UNIVERSAL["disable"])
                 time.sleep(0.01)
             self.bus.shutdown()
         except Exception:
