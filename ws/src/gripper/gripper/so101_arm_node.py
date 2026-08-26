@@ -104,14 +104,14 @@ class SO101ArmNode(Node):
         # Arm
         self.declare_parameter('arm_port', '/dev/ttyACM0')
         # Gripper
-        self.declare_parameter('node_id', 1)
+        self.declare_parameter('node_id', 3)
         self.declare_parameter('can_channel', 'can0')
         self.declare_parameter('homing_speed', 2.0) # rad/s. Use positive to close jaws now.
-        self.declare_parameter('homing_current_threshold', 1.0) # Amps
+        self.declare_parameter('homing_current_threshold', 2.5) # Amps
         self.declare_parameter('open_position', 0.67) # radians
-        self.declare_parameter('kp', 0.123)
-        self.declare_parameter('kd', 0.01)
-        self.declare_parameter('friction_comp', 0.05) # Nm of Coulomb friction to compensate
+        self.declare_parameter('kp', 0.17)
+        self.declare_parameter('kd', 0.006)
+        self.declare_parameter('friction_comp', 0.09) # Nm of Coulomb friction to compensate
         
         # Extract params
         arm_port = self.get_parameter('arm_port').value
@@ -331,7 +331,11 @@ class SO101ArmNode(Node):
                 t_pos += self.target_vel * dt
                 self.target_pos = t_pos # Update shared state
                 
-                cmd = pack_mit(pos=t_pos, vel=self.target_vel, kp=self.kp, kd=self.kd, tff=0.0)
+                # Apply friction compensation in the direction of homing velocity
+                comp_torque = math.copysign(self.get_parameter('friction_comp').value, self.target_vel)
+                
+                # Use the user-defined kp and kd for homing as requested.
+                cmd = pack_mit(pos=t_pos, vel=0.0, kp=self.kp, kd=self.kd, tff=comp_torque)
                 self._send_raw("mit", cmd)
             elif mode == "POSITION":
                 # For position control, use full PD
@@ -484,17 +488,37 @@ class SO101ArmNode(Node):
         return response
         
     def destroy_node(self):
+        self.get_logger().info("Shutting down... disabling motors.")
         self.running = False
+        
+        # Stop threads
         try:
-            self._send_raw("mit", UNIVERSAL["disable"])
+            self.read_thread.join(timeout=1.0)
+            self.control_thread.join(timeout=1.0)
+            self.arm_thread.join(timeout=1.0)
+        except Exception:
+            pass
+
+        # Disable gripper (send 0 torque explicitly first, then disable)
+        try:
+            cmd = pack_mit(pos=0.0, vel=0.0, kp=0.0, kd=0.0, tff=0.0)
+            for _ in range(3):
+                self._send_raw("mit", cmd)
+                time.sleep(0.01)
+            for _ in range(3):
+                self._send_raw("mit", UNIVERSAL["disable"])
+                time.sleep(0.01)
             self.bus.shutdown()
         except Exception:
             pass
+
+        # Disable arm
         try:
             if self.arm is not None:
                 self.arm.disconnect()
         except Exception:
             pass
+            
         super().destroy_node()
 
 def main(args=None):

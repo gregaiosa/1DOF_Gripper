@@ -78,7 +78,7 @@ class GripperNode(Node):
         self.declare_parameter('homing_current_threshold', 1.0) # Amps
         self.declare_parameter('open_position', math.pi) # 0.5 revs = pi radians
         self.declare_parameter('kp', 0.19)
-        self.declare_parameter('kd', 0.01)
+        self.declare_parameter('kd', 0.005)
         
         self.node_id = self.get_parameter('node_id').value
         self.channel = self.get_parameter('can_channel').value
