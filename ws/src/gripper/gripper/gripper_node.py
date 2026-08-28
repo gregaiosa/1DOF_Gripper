@@ -96,6 +96,11 @@ class GripperNode(Node):
         self.current_vel = 0.0
         self.current_iq = 0.0
         self.current_torque = 0.0
+        
+        self.cmd_pos = 0.0
+        self.cmd_vel = 0.0
+        self.cmd_torque = 0.0
+        self.cmd_iq = 0.0
         self.homed = False
         
         # State machine for the control loop
@@ -126,21 +131,26 @@ class GripperNode(Node):
         self.pub_cur = self.create_publisher(Float64, '~/current', 10)
         self.pub_trq = self.create_publisher(Float64, '~/torque', 10)
         
+        self.pub_cmd_pos = self.create_publisher(Float64, '~/command/position', 10)
+        self.pub_cmd_vel = self.create_publisher(Float64, '~/command/velocity', 10)
+        self.pub_cmd_cur = self.create_publisher(Float64, '~/command/current', 10)
+        self.pub_cmd_trq = self.create_publisher(Float64, '~/command/torque', 10)
+        
         # 50Hz telemetry timer
         self.telemetry_timer = self.create_timer(0.02, self.publish_telemetry)
         
         self.get_logger().info("Gripper node started.")
         
     def publish_telemetry(self):
-        msg_pos = Float64(data=self.current_pos)
-        msg_vel = Float64(data=self.current_vel)
-        msg_cur = Float64(data=self.current_iq)
-        msg_trq = Float64(data=self.current_torque)
+        self.pub_pos.publish(Float64(data=self.current_pos))
+        self.pub_vel.publish(Float64(data=self.current_vel))
+        self.pub_cur.publish(Float64(data=self.current_iq))
+        self.pub_trq.publish(Float64(data=self.current_torque))
         
-        self.pub_pos.publish(msg_pos)
-        self.pub_vel.publish(msg_vel)
-        self.pub_cur.publish(msg_cur)
-        self.pub_trq.publish(msg_trq)
+        self.pub_cmd_pos.publish(Float64(data=self.cmd_pos))
+        self.pub_cmd_vel.publish(Float64(data=self.cmd_vel))
+        self.pub_cmd_cur.publish(Float64(data=self.cmd_iq))
+        self.pub_cmd_trq.publish(Float64(data=self.cmd_torque))
 
     def _send_raw(self, mode, data):
         msg = can.Message(arbitration_id=arb_id(mode, self.node_id),
@@ -184,15 +194,30 @@ class GripperNode(Node):
                 
                 cmd = pack_mit(pos=t_pos, vel=self.target_vel, kp=self.kp, kd=self.kd, tff=0.0)
                 self._send_raw("mit", cmd)
+                
+                self.cmd_pos = t_pos
+                self.cmd_vel = self.target_vel
+                self.cmd_torque = self.kp * (t_pos - self.current_pos) + self.kd * (self.target_vel - self.current_vel)
+                self.cmd_iq = self.cmd_torque / KT
             elif mode == "POSITION":
                 # For position control, use full PD
                 # Torque = kp * (t_pos - pos) + kd * (0 - vel)
                 cmd = pack_mit(pos=t_pos, vel=0.0, kp=self.kp, kd=self.kd, tff=0.0)
                 self._send_raw("mit", cmd)
+                
+                self.cmd_pos = t_pos
+                self.cmd_vel = 0.0
+                self.cmd_torque = self.kp * (t_pos - self.current_pos) + self.kd * (0.0 - self.current_vel)
+                self.cmd_iq = self.cmd_torque / KT
             elif mode == "IDLE":
                 # Send 0 torque / 0 gains just to keep connection alive if needed
                 cmd = pack_mit(pos=0.0, vel=0.0, kp=0.0, kd=0.0, tff=0.0)
                 self._send_raw("mit", cmd)
+                
+                self.cmd_pos = 0.0
+                self.cmd_vel = 0.0
+                self.cmd_torque = 0.0
+                self.cmd_iq = 0.0
 
             elapsed = time.time() - t_start
             if elapsed < dt:

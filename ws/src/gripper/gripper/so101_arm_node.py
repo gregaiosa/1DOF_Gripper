@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, SetBool
 from std_msgs.msg import Float64
 from sensor_msgs.msg import JointState
+from rcl_interfaces.msg import SetParametersResult
 import can
 import struct
 import time
@@ -112,7 +113,7 @@ class SO101ArmNode(Node):
         self.declare_parameter('open_position', 0.67) # radians
         self.declare_parameter('kp', 0.16)
         self.declare_parameter('kd', 0.006)
-        self.declare_parameter('friction_comp', 0.09) # Nm of Coulomb friction to compensate
+        self.declare_parameter('friction_comp', 0.06) # Nm of Coulomb friction to compensate
         self.declare_parameter('haptic_gain', 1.0)
         self.declare_parameter('enable_bilateral', True)
         
@@ -125,6 +126,9 @@ class SO101ArmNode(Node):
         self.kd = self.get_parameter('kd').value
         self.haptic_gain = self.get_parameter('haptic_gain').value
         self.enable_bilateral = self.get_parameter('enable_bilateral').value
+        
+        # Register parameter callback for dynamic updates (e.g. from Foxglove)
+        self.add_on_set_parameters_callback(self.parameter_callback)
         
         # ---------------------------------------------------------
         # INITIALIZE SO-101 ARM (FEETECH)
@@ -182,6 +186,18 @@ class SO101ArmNode(Node):
         self.leader_iq = 0.0
         self.leader_torque = 0.0
         
+        # Follower Commanded State
+        self.cmd_follower_pos = 0.0
+        self.cmd_follower_vel = 0.0
+        self.cmd_follower_torque = 0.0
+        self.cmd_follower_iq = 0.0
+
+        # Leader Commanded State
+        self.cmd_leader_pos = 0.0
+        self.cmd_leader_vel = 0.0
+        self.cmd_leader_torque = 0.0
+        self.cmd_leader_iq = 0.0
+        
         self.homed = False
         
         # State machine for the control loop
@@ -208,6 +224,7 @@ class SO101ArmNode(Node):
         self.srv_home = self.create_service(Trigger, '~/gripper/home', self.home_callback)
         self.srv_open = self.create_service(Trigger, '~/gripper/open', self.open_callback)
         self.srv_close = self.create_service(Trigger, '~/gripper/close', self.close_callback)
+        self.srv_bilateral = self.create_service(SetBool, '~/gripper/set_bilateral', self.set_bilateral_callback)
         
         # Publishers
         self.pub_arm_state = self.create_publisher(JointState, '~/arm/joint_states', 10)
@@ -215,6 +232,20 @@ class SO101ArmNode(Node):
         self.pub_vel = self.create_publisher(Float64, '~/gripper/velocity', 10)
         self.pub_cur = self.create_publisher(Float64, '~/gripper/current', 10)
         self.pub_trq = self.create_publisher(Float64, '~/gripper/torque', 10)
+        self.pub_leader_pos = self.create_publisher(Float64, '~/leader/position', 10)
+        self.pub_leader_vel = self.create_publisher(Float64, '~/leader/velocity', 10)
+        self.pub_leader_cur = self.create_publisher(Float64, '~/leader/current', 10)
+        self.pub_leader_trq = self.create_publisher(Float64, '~/leader/torque', 10)
+        
+        self.pub_cmd_pos = self.create_publisher(Float64, '~/gripper/command/position', 10)
+        self.pub_cmd_vel = self.create_publisher(Float64, '~/gripper/command/velocity', 10)
+        self.pub_cmd_cur = self.create_publisher(Float64, '~/gripper/command/current', 10)
+        self.pub_cmd_trq = self.create_publisher(Float64, '~/gripper/command/torque', 10)
+
+        self.pub_leader_cmd_pos = self.create_publisher(Float64, '~/leader/command/position', 10)
+        self.pub_leader_cmd_vel = self.create_publisher(Float64, '~/leader/command/velocity', 10)
+        self.pub_leader_cmd_cur = self.create_publisher(Float64, '~/leader/command/current', 10)
+        self.pub_leader_cmd_trq = self.create_publisher(Float64, '~/leader/command/torque', 10)
         
         # Subscribers
         self.sub_arm_cmd = self.create_subscription(JointState, '~/arm/joint_commands', self.arm_cmd_callback, 10)
@@ -235,16 +266,44 @@ class SO101ArmNode(Node):
         
         self.get_logger().info("SO101 Arm + Gripper node started.")
         
-    def publish_telemetry(self):
-        msg_pos = Float64(data=self.current_pos)
-        msg_vel = Float64(data=self.current_vel)
-        msg_cur = Float64(data=self.current_iq)
-        msg_trq = Float64(data=self.current_torque)
+    def parameter_callback(self, params):
+        for param in params:
+            if param.name == 'kp':
+                self.kp = param.value
+                self.get_logger().info(f"Updated kp to {self.kp}")
+            elif param.name == 'kd':
+                self.kd = param.value
+                self.get_logger().info(f"Updated kd to {self.kd}")
+            elif param.name == 'haptic_gain':
+                self.haptic_gain = param.value
+                self.get_logger().info(f"Updated haptic_gain to {self.haptic_gain}")
+            elif param.name == 'enable_bilateral':
+                self.enable_bilateral = param.value
+                self.get_logger().info(f"Updated enable_bilateral to {self.enable_bilateral}")
+            elif param.name == 'friction_comp':
+                self.get_logger().info(f"Updated friction_comp to {param.value}")
+        return SetParametersResult(successful=True)
         
-        self.pub_pos.publish(msg_pos)
-        self.pub_vel.publish(msg_vel)
-        self.pub_cur.publish(msg_cur)
-        self.pub_trq.publish(msg_trq)
+    def publish_telemetry(self):
+        self.pub_pos.publish(Float64(data=self.current_pos))
+        self.pub_vel.publish(Float64(data=self.current_vel))
+        self.pub_cur.publish(Float64(data=self.current_iq))
+        self.pub_trq.publish(Float64(data=self.current_torque))
+        
+        self.pub_leader_pos.publish(Float64(data=self.leader_pos))
+        self.pub_leader_vel.publish(Float64(data=self.leader_vel))
+        self.pub_leader_cur.publish(Float64(data=self.leader_iq))
+        self.pub_leader_trq.publish(Float64(data=self.leader_torque))
+        
+        self.pub_cmd_pos.publish(Float64(data=self.cmd_follower_pos))
+        self.pub_cmd_vel.publish(Float64(data=self.cmd_follower_vel))
+        self.pub_cmd_cur.publish(Float64(data=self.cmd_follower_iq))
+        self.pub_cmd_trq.publish(Float64(data=self.cmd_follower_torque))
+        
+        self.pub_leader_cmd_pos.publish(Float64(data=self.cmd_leader_pos))
+        self.pub_leader_cmd_vel.publish(Float64(data=self.cmd_leader_vel))
+        self.pub_leader_cmd_cur.publish(Float64(data=self.cmd_leader_iq))
+        self.pub_leader_cmd_trq.publish(Float64(data=self.cmd_leader_torque))
 
     # ---------------------------------------------------------
     # ARM LOGIC
@@ -378,9 +437,19 @@ class SO101ArmNode(Node):
                 cmd = pack_mit(pos=t_pos, vel=0.0, kp=self.kp, kd=self.kd, tff=comp_torque)
                 self._send_raw("mit", self.node_id, cmd)
                 
+                self.cmd_follower_pos = t_pos
+                self.cmd_follower_vel = 0.0
+                self.cmd_follower_torque = self.kp * (t_pos - self.current_pos) + self.kd * (0.0 - self.current_vel) + comp_torque
+                self.cmd_follower_iq = self.cmd_follower_torque / KT
+                
                 # Leader holds zero torque during follower homing
                 leader_cmd = pack_mit(pos=0.0, vel=0.0, kp=0.0, kd=0.0, tff=0.0)
                 self._send_raw("mit", self.leader_id, leader_cmd)
+                
+                self.cmd_leader_pos = 0.0
+                self.cmd_leader_vel = 0.0
+                self.cmd_leader_torque = 0.0
+                self.cmd_leader_iq = 0.0
                 
             elif mode == "POSITION":
                 if self.enable_bilateral:
@@ -396,6 +465,11 @@ class SO101ArmNode(Node):
                     cmd = pack_mit(pos=t_pos, vel=0.0, kp=self.kp, kd=self.kd, tff=comp_torque)
                     self._send_raw("mit", self.node_id, cmd)
                     
+                    self.cmd_follower_pos = t_pos
+                    self.cmd_follower_vel = 0.0
+                    self.cmd_follower_torque = self.kp * error + self.kd * (0.0 - self.current_vel) + comp_torque
+                    self.cmd_follower_iq = self.cmd_follower_torque / KT
+                    
                     # Leader Command (Force Feedback)
                     # We negate the follower's torque so it pushes back against the user
                     force_feedback = -self.current_torque * self.haptic_gain
@@ -403,6 +477,11 @@ class SO101ArmNode(Node):
                     # Add a tiny bit of kd damping (0.01) to the leader to make it feel smooth
                     leader_cmd = pack_mit(pos=0.0, vel=0.0, kp=0.0, kd=0.01, tff=force_feedback)
                     self._send_raw("mit", self.leader_id, leader_cmd)
+                    
+                    self.cmd_leader_pos = 0.0
+                    self.cmd_leader_vel = 0.0
+                    self.cmd_leader_torque = 0.01 * (0.0 - self.leader_vel) + force_feedback
+                    self.cmd_leader_iq = self.cmd_leader_torque / KT
                 else:
                     # Normal position control (e.g. from Phosphobot topic)
                     error = t_pos - self.current_pos
@@ -417,15 +496,35 @@ class SO101ArmNode(Node):
                     cmd = pack_mit(pos=t_pos, vel=0.0, kp=self.kp, kd=self.kd, tff=comp_torque)
                     self._send_raw("mit", self.node_id, cmd)
                     
+                    self.cmd_follower_pos = t_pos
+                    self.cmd_follower_vel = 0.0
+                    self.cmd_follower_torque = self.kp * error + self.kd * (0.0 - self.current_vel) + comp_torque
+                    self.cmd_follower_iq = self.cmd_follower_torque / KT
+                    
                     # Leader holds zero torque
                     leader_cmd = pack_mit(pos=0.0, vel=0.0, kp=0.0, kd=0.0, tff=0.0)
                     self._send_raw("mit", self.leader_id, leader_cmd)
+                    
+                    self.cmd_leader_pos = 0.0
+                    self.cmd_leader_vel = 0.0
+                    self.cmd_leader_torque = 0.0
+                    self.cmd_leader_iq = 0.0
                     
             elif mode == "IDLE":
                 # Send 0 torque / 0 gains just to keep connection alive if needed
                 cmd = pack_mit(pos=0.0, vel=0.0, kp=0.0, kd=0.0, tff=0.0)
                 self._send_raw("mit", self.node_id, cmd)
                 self._send_raw("mit", self.leader_id, cmd)
+                
+                self.cmd_follower_pos = 0.0
+                self.cmd_follower_vel = 0.0
+                self.cmd_follower_torque = 0.0
+                self.cmd_follower_iq = 0.0
+                
+                self.cmd_leader_pos = 0.0
+                self.cmd_leader_vel = 0.0
+                self.cmd_leader_torque = 0.0
+                self.cmd_leader_iq = 0.0
 
             elapsed = time.time() - t_start
             if elapsed < dt:
@@ -557,6 +656,20 @@ class SO101ArmNode(Node):
         
         response.success = True
         response.message = "Gripper closed."
+        return response
+        
+    def set_bilateral_callback(self, request, response):
+        self.enable_bilateral = request.data
+        mode_str = "Bilateral" if self.enable_bilateral else "Regular Position"
+        self.get_logger().info(f"Gripper mode switched to: {mode_str} Control")
+        
+        # If switching to regular control, reset the target position to current to avoid jumping
+        if not self.enable_bilateral:
+            with self.state_lock:
+                self.target_pos = self.current_pos
+            
+        response.success = True
+        response.message = f"Switched to {mode_str} Control"
         return response
         
     def destroy_node(self):
