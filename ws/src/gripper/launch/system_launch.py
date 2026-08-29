@@ -1,10 +1,19 @@
 import launch
 from launch import LaunchDescription
-from launch.actions import TimerAction
+from launch.actions import TimerAction, DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 def generate_launch_description():
+    arm_port_arg = DeclareLaunchArgument(
+        'arm_port',
+        default_value='/dev/ttyACM0',
+        description='Serial port for the Follower SO-101 Arm'
+    )
+
     return LaunchDescription([
+        arm_port_arg,
+        
         # 1. Start the Foxglove Bridge node immediately
         Node(
             package='foxglove_bridge',
@@ -19,6 +28,7 @@ def generate_launch_description():
             executable='so101_arm_node',
             name='so101_arm_node',
             output='screen',
+            parameters=[{'arm_port': LaunchConfiguration('arm_port')}]
         ),
 
         # 3. Delay the startup of Phosphobot Bridge by 3 seconds.
