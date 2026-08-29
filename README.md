@@ -57,6 +57,8 @@ ros2 service call /so101_arm_node/gripper/home std_srvs/srv/Trigger
 * **High-Frequency CAN Loop:** Runs a dedicated `1000Hz` `_can_control_loop` overriding ROS topics to communicate directly with both the GL60 II (Node 1) and GL40 II (Node 3) over MIT mode.
 * **Bilateral Mapping:** Translates the leader's actual position directly to the follower's target. It captures the follower's real-time torque and applies it as a negated feedforward (`tff`) torque to the leader, scaled by a configurable `haptic_gain`.
 * **Friction Compensation:** Dynamically applies feedforward torque to overcome static/Coulomb friction, tapering linearly within 0.1 radians of the target to prevent bang-bang limit cycles.
+* **Dynamic Parameter Tuning:** Implements parameter callbacks allowing on-the-fly adjustment of control gains (`kp`, `kd`), `friction_comp`, and `haptic_gain` via the ROS 2 parameter server.
+* **Comprehensive Telemetry:** Publishes high-resolution actual and commanded states (position, velocity, current, torque) for both leader and follower motors, enabling deep system profiling and debugging.
 * **Arm Integration:** Concurrently manages the Feetech serial bus for the SO-101 arm at ~30Hz, publishing `/arm/joint_states` and subscribing to `/arm/joint_commands`.
 
 ### `phosphobot_bridge.py` (Web UI Integration)
