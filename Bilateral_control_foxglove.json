@@ -1,0 +1,128 @@
+{
+  "configById": {
+    "Parameters!wx0kj1": {},
+    "CallService!3zg9hmc": {
+      "requestPayload": "{}",
+      "layout": "vertical",
+      "timeoutSeconds": 10,
+      "serviceName": "/so101_arm_node/gripper/home",
+      "editingMode": false,
+      "buttonText": "Home"
+    },
+    "CallService!3roxuvr": {
+      "requestPayload": "{}",
+      "layout": "vertical",
+      "timeoutSeconds": 10,
+      "serviceName": "/so101_arm_node/gripper/open",
+      "editingMode": false,
+      "buttonText": "Open"
+    },
+    "CallService!24ahvb9": {
+      "requestPayload": "{}",
+      "layout": "vertical",
+      "timeoutSeconds": 10,
+      "serviceName": "/so101_arm_node/gripper/close",
+      "editingMode": false,
+      "buttonText": "Close"
+    },
+    "Tab!donxg1": {
+      "activeTabIdx": 0,
+      "tabs": [
+        {
+          "title": "Overview",
+          "layout": {
+            "first": "Parameters!wx0kj1",
+            "second": {
+              "first": {
+                "first": "CallService!3zg9hmc",
+                "second": "CallService!3roxuvr",
+                "direction": "row"
+              },
+              "second": "CallService!24ahvb9",
+              "direction": "column",
+              "splitPercentage": 46.075085324232084
+            },
+            "direction": "row",
+            "splitPercentage": 66.93172584778426
+          }
+        }
+      ]
+    },
+    "Plot!32ufp2y": {
+      "paths": [
+        {
+          "timestampMethod": "receiveTime",
+          "value": "/so101_arm_node/leader/position.data",
+          "enabled": true,
+          "label": "Leader Position",
+          "lineSize": 2,
+          "color": "#6d00ae"
+        },
+        {
+          "timestampMethod": "receiveTime",
+          "value": "/so101_arm_node/gripper/position.data",
+          "enabled": true,
+          "label": "Follower Position",
+          "lineSize": 2,
+          "color": "#e3d95a"
+        }
+      ],
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showPlotValuesInLegend": false,
+      "isSynced": true,
+      "xAxisVal": "timestamp",
+      "sidebarDimension": 240,
+      "followingViewWidth": 4
+    },
+    "Plot!48n11ru": {
+      "paths": [
+        {
+          "timestampMethod": "receiveTime",
+          "value": "/so101_arm_node/leader/torque.data",
+          "enabled": true,
+          "showLine": true,
+          "label": "Leader Torque",
+          "lineSize": 2,
+          "color": "#00a6ff"
+        },
+        {
+          "timestampMethod": "receiveTime",
+          "value": "/so101_arm_node/gripper/torque.data",
+          "enabled": true,
+          "color": "#4e98e2",
+          "id": "5d17a722-a8bd-45fc-8193-000d4e294791",
+          "label": "Gripper Torque"
+        }
+      ],
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showPlotValuesInLegend": false,
+      "isSynced": true,
+      "xAxisVal": "timestamp",
+      "sidebarDimension": 240,
+      "followingViewWidth": 4
+    }
+  },
+  "globalVariables": {
+    "/so101_arm_node.haptic_gain": 1
+  },
+  "userNodes": {},
+  "playbackConfig": {
+    "speed": 1
+  },
+  "layout": {
+    "first": "Tab!donxg1",
+    "second": {
+      "first": "Plot!32ufp2y",
+      "second": "Plot!48n11ru",
+      "direction": "row"
+    },
+    "direction": "column",
+    "splitPercentage": 24.61362608053723
+  }
+}

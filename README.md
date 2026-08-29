@@ -53,6 +53,12 @@ Once the nodes are active, the follower gripper must be homed against its hard s
 ros2 service call /so101_arm_node/gripper/home std_srvs/srv/Trigger
 ```
 
+### 3. Visualization & Tuning
+We provide a pre-configured Foxglove Studio layout to visualize the haptic telemetry and dynamically tune control parameters.
+1. Open [Foxglove Studio](https://foxglove.dev/).
+2. Connect to the ROS 2 Foxglove bridge (usually `ws://localhost:8765`).
+3. Import the `Bilateral_control_foxglove.json` layout file located in the root of this repository.
+
 ### `so101_arm_node.py` (Core Control & Teleoperation)
 * **High-Frequency CAN Loop:** Runs a dedicated `1000Hz` `_can_control_loop` overriding ROS topics to communicate directly with both the GL60 II (Node 1) and GL40 II (Node 3) over MIT mode.
 * **Bilateral Mapping:** Translates the leader's actual position directly to the follower's target. It captures the follower's real-time torque and applies it as a negated feedforward (`tff`) torque to the leader, scaled by a configurable `haptic_gain`.
